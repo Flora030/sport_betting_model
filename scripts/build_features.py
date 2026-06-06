@@ -25,8 +25,19 @@ games["OPP_PTS"] = games.groupby("GAME_ID")["PTS"].transform(
 
 games["POINT_DIFF"] = games["PTS"] - games["OPP_PTS"]
 
+games["REST_DAYS"] = (
+    games.groupby("TEAM_ABBREVIATION")["GAME_DATE"]
+    .diff()
+    .dt.days
+)
+
 games["AVG_POINTS_FOR"] = (
     games.groupby("TEAM_ABBREVIATION")["PTS"]
+    .transform(lambda x: x.shift().expanding().mean())
+)
+
+games["AVG_POINTS_ALLOWED"] = (
+    games.groupby("TEAM_ABBREVIATION")["OPP_PTS"]
     .transform(lambda x: x.shift().expanding().mean())
 )
 
@@ -45,6 +56,11 @@ games["LAST_10_AVG_POINTS"] = (
     .transform(lambda x: x.shift().rolling(10, min_periods=3).mean())
 )
 
+games["LAST_10_POINTS_ALLOWED"] = (
+    games.groupby("TEAM_ABBREVIATION")["OPP_PTS"]
+    .transform(lambda x: x.shift().rolling(10, min_periods=3).mean())
+)
+
 games["AVG_POINT_DIFF"] = (
     games.groupby("TEAM_ABBREVIATION")["POINT_DIFF"]
     .transform(lambda x: x.shift().expanding().mean())
@@ -53,10 +69,13 @@ games["AVG_POINT_DIFF"] = (
 features = games.dropna(
     subset=[
         "AVG_POINTS_FOR",
+        "AVG_POINTS_ALLOWED",
         "WIN_RATE",
         "LAST_10_WIN_RATE",
         "LAST_10_AVG_POINTS",
+        "LAST_10_POINTS_ALLOWED",
         "AVG_POINT_DIFF",
+        "REST_DAYS",
     ]
 )
 

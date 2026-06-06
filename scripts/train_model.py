@@ -4,7 +4,7 @@ import joblib
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, precision_score, log_loss
 
 FEATURES_PATH = "data/processed/features.csv"
 MODEL_DIR = "models"
@@ -12,14 +12,11 @@ MODEL_PATH = os.path.join(MODEL_DIR, "nba_win_model.joblib")
 
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-data = pd.read_csv(FEATURES_PATH)
-data = data.dropna()
+data = pd.read_csv(FEATURES_PATH).dropna()
 
-# Keep only rows where team is home
 home_games = data[data["IS_HOME"] == 1].copy()
 away_games = data[data["IS_HOME"] == 0].copy()
 
-# Merge home row with away row from same game
 matchups = home_games.merge(
     away_games,
     on="GAME_ID",
@@ -33,6 +30,9 @@ matchups["LAST_10_WIN_RATE_DIFF"] = matchups["LAST_10_WIN_RATE_HOME"] - matchups
 matchups["AVG_POINT_DIFF_DIFF"] = matchups["AVG_POINT_DIFF_HOME"] - matchups["AVG_POINT_DIFF_AWAY"]
 matchups["AVG_POINTS_FOR_DIFF"] = matchups["AVG_POINTS_FOR_HOME"] - matchups["AVG_POINTS_FOR_AWAY"]
 matchups["LAST_10_AVG_POINTS_DIFF"] = matchups["LAST_10_AVG_POINTS_HOME"] - matchups["LAST_10_AVG_POINTS_AWAY"]
+matchups["AVG_POINTS_ALLOWED_DIFF"] = matchups["AVG_POINTS_ALLOWED_HOME"] - matchups["AVG_POINTS_ALLOWED_AWAY"]
+matchups["LAST_10_POINTS_ALLOWED_DIFF"] = matchups["LAST_10_POINTS_ALLOWED_HOME"] - matchups["LAST_10_POINTS_ALLOWED_AWAY"]
+matchups["REST_DAYS_DIFF"] = matchups["REST_DAYS_HOME"] - matchups["REST_DAYS_AWAY"]
 
 feature_cols = [
     "WIN_RATE_DIFF",
@@ -40,6 +40,9 @@ feature_cols = [
     "AVG_POINT_DIFF_DIFF",
     "AVG_POINTS_FOR_DIFF",
     "LAST_10_AVG_POINTS_DIFF",
+    "AVG_POINTS_ALLOWED_DIFF",
+    "LAST_10_POINTS_ALLOWED_DIFF",
+    "REST_DAYS_DIFF",
 ]
 
 matchups = matchups.dropna(subset=feature_cols + ["WIN"])
@@ -55,7 +58,11 @@ model = LogisticRegression(max_iter=1000)
 model.fit(X_train, y_train)
 
 predictions = model.predict(X_test)
+probabilities = model.predict_proba(X_test)[:, 1]
+
 accuracy = accuracy_score(y_test, predictions)
+precision = precision_score(y_test, predictions)
+loss = log_loss(y_test, probabilities)
 
 team_latest_features = (
     data.sort_values("GAME_DATE")
@@ -70,7 +77,9 @@ joblib.dump(
         "team_latest_features": team_latest_features,
         "feature_cols": feature_cols,
         "accuracy": accuracy,
-        "model_type": "matchup_difference",
+        "precision": precision,
+        "log_loss": loss,
+        "model_type": "matchup_difference_with_rest_and_defense",
     },
     MODEL_PATH,
 )
@@ -78,3 +87,5 @@ joblib.dump(
 print(f"Rows used for training: {len(matchups)}")
 print(f"Model saved to {MODEL_PATH}")
 print(f"Accuracy: {accuracy:.3f}")
+print(f"Precision: {precision:.3f}")
+print(f"Log Loss: {loss:.3f}")

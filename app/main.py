@@ -11,24 +11,24 @@ app = FastAPI(
 
 MODEL_PATH = "models/nba_win_model.joblib"
 
-
 def load_model_package():
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError("Model file not found. Run scripts/train_model.py first.")
     return joblib.load(MODEL_PATH)
-
 
 model_package = load_model_package()
 model = model_package["model"]
 team_latest_features = model_package["team_latest_features"]
 feature_cols = model_package["feature_cols"]
 accuracy = model_package["accuracy"]
+precision = model_package.get("precision")
+log_loss = model_package.get("log_loss")
+model_type = model_package.get("model_type", "unknown")
 
 def american_odds_to_implied_probability(odds: int) -> float:
     if odds > 0:
         return 100 / (odds + 100)
     return abs(odds) / (abs(odds) + 100)
-
 
 def calculate_expected_value(model_prob: float, american_odds: int) -> float:
     if american_odds > 0:
@@ -48,10 +48,11 @@ def root():
 @app.get("/model-info")
 def model_info():
     return {
-        "model_type": "LogisticRegression",
+        "model_type": model_type,
         "accuracy": round(accuracy, 4),
+        "precision": round(precision, 4) if precision else None,
+        "log_loss": round(log_loss, 4) if log_loss else None,
         "features": feature_cols,
-        "note": "Baseline model using recent form, home/away, scoring averages, and point differential.",
     }
 
 @app.get("/teams")
@@ -116,6 +117,9 @@ def predict(home: str, away: str):
             "AVG_POINT_DIFF_DIFF": home_row["AVG_POINT_DIFF"] - away_row["AVG_POINT_DIFF"],
             "AVG_POINTS_FOR_DIFF": home_row["AVG_POINTS_FOR"] - away_row["AVG_POINTS_FOR"],
             "LAST_10_AVG_POINTS_DIFF": home_row["LAST_10_AVG_POINTS"] - away_row["LAST_10_AVG_POINTS"],
+            "AVG_POINTS_ALLOWED_DIFF": home_row["AVG_POINTS_ALLOWED"] - away_row["AVG_POINTS_ALLOWED"],
+            "LAST_10_POINTS_ALLOWED_DIFF": home_row["LAST_10_POINTS_ALLOWED"] - away_row["LAST_10_POINTS_ALLOWED"],
+            "REST_DAYS_DIFF": home_row["REST_DAYS"] - away_row["REST_DAYS"],
         }
     ])
 
@@ -129,7 +133,10 @@ def predict(home: str, away: str):
         "away_win_probability": round(away_prob, 4),
         "predicted_winner": home if home_prob > away_prob else away,
         "model_accuracy": round(accuracy, 4),
-        "note": "Matchup-difference model using home vs away team feature gaps.",
+        "model_precision": round(precision, 4) if precision else None,
+        "model_log_loss": round(log_loss, 4) if log_loss else None,
+        "model_type": model_type,
+        "note": "Matchup-difference model with rest days and defensive features.",
     }
 
 @app.get("/bet-analysis")
