@@ -69,6 +69,39 @@ def calculate_expected_value(model_prob: float, american_odds: int) -> float:
     ev = (model_prob * profit_if_win) - probability_losing
     return ev
 
+def build_matchup_dataset():
+    features_path = "data/processed/features.csv"
+
+    if not os.path.exists(features_path):
+        raise HTTPException(
+            status_code=404,
+            detail="features.csv not found. Run build_features.py first."
+        )
+
+    data = pd.read_csv(features_path).dropna()
+
+    home_games = data[data["IS_HOME"] == 1].copy()
+    away_games = data[data["IS_HOME"] == 0].copy()
+
+    matchups = home_games.merge(
+        away_games,
+        on="GAME_ID",
+        suffixes=("_HOME", "_AWAY")
+    )
+
+    matchups["HOME_WIN"] = matchups["WIN_HOME"]
+
+    matchups["WIN_RATE_DIFF"] = matchups["WIN_RATE_HOME"] - matchups["WIN_RATE_AWAY"]
+    matchups["LAST_10_WIN_RATE_DIFF"] = matchups["LAST_10_WIN_RATE_HOME"] - matchups["LAST_10_WIN_RATE_AWAY"]
+    matchups["AVG_POINT_DIFF_DIFF"] = matchups["AVG_POINT_DIFF_HOME"] - matchups["AVG_POINT_DIFF_AWAY"]
+    matchups["AVG_POINTS_FOR_DIFF"] = matchups["AVG_POINTS_FOR_HOME"] - matchups["AVG_POINTS_FOR_AWAY"]
+    matchups["LAST_10_AVG_POINTS_DIFF"] = matchups["LAST_10_AVG_POINTS_HOME"] - matchups["LAST_10_AVG_POINTS_AWAY"]
+    matchups["AVG_POINTS_ALLOWED_DIFF"] = matchups["AVG_POINTS_ALLOWED_HOME"] - matchups["AVG_POINTS_ALLOWED_AWAY"]
+    matchups["LAST_10_POINTS_ALLOWED_DIFF"] = matchups["LAST_10_POINTS_ALLOWED_HOME"] - matchups["LAST_10_POINTS_ALLOWED_AWAY"]
+    matchups["REST_DAYS_DIFF"] = matchups["REST_DAYS_HOME"] - matchups["REST_DAYS_AWAY"]
+
+    return matchups.dropna(subset=feature_cols + ["HOME_WIN"])
+
 @app.get("/")
 def root():
     return {"status": "running"}
@@ -432,4 +465,68 @@ def live_bet_analysis():
     return {
         "games_analyzed": len(results),
         "games": results,
+    }
+
+@app.get("/calibration")
+def calibration():
+    matchups = build_matchup_dataset()
+
+    X = matchups[feature_cols]
+    matchups["PREDICTED_PROB"] = model.predict_proba(X)[:, 1]
+
+    bins = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    labels = [
+        "0-10%",
+        "10-20%",
+        "20-30%",
+        "30-40%",
+        "40-50%",
+        "50-60%",
+        "60-70%",
+        "70-80%",
+        "80-90%",
+        "90-100%",
+    ]
+
+    matchups["PROB_BUCKET"] = pd.cut(
+        matchups["PREDICTED_PROB"],
+        bins=bins,
+        labels=labels,
+        include_lowest=True
+    )
+
+    cal = (
+        matchups.groupby("PROB_BUCKET", observed=False)
+        .agg(
+            games=("GAME_ID", "count"),
+            avg_predicted_probability=("PREDICTED_PROB", "mean"),
+            actual_win_rate=("HOME_WIN", "mean"),
+        )
+        .reset_index()
+    )
+
+    cal["calibration_error"] = (
+        cal["avg_predicted_probability"] - cal["actual_win_rate"]
+    ).abs()
+
+    rows = []
+
+    for _, row in cal.iterrows():
+        rows.append({
+            "probability_bucket": str(row["PROB_BUCKET"]),
+            "games": int(row["games"]),
+            "avg_predicted_probability": round(float(row["avg_predicted_probability"]), 4)
+            if pd.notnull(row["avg_predicted_probability"]) else None,
+            "actual_win_rate": round(float(row["actual_win_rate"]), 4)
+            if pd.notnull(row["actual_win_rate"]) else None,
+            "calibration_error": round(float(row["calibration_error"]), 4)
+            if pd.notnull(row["calibration_error"]) else None,
+        })
+
+    avg_error = cal["calibration_error"].dropna().mean()
+
+    return {
+        "average_calibration_error": round(float(avg_error), 4),
+        "buckets": rows,
+        "note": "If predicted probability is well-calibrated, avg_predicted_probability should be close to actual_win_rate in each bucket.",
     }
