@@ -19,9 +19,11 @@ games["OPPONENT"] = games["MATCHUP"].apply(
 
 games = games.sort_values(["TEAM_ABBREVIATION", "GAME_DATE"])
 
-games["POINT_DIFF"] = games.groupby("GAME_ID")["PTS"].transform(
-    lambda x: x.iloc[0] - x.iloc[1] if len(x) == 2 else 0
+games["OPP_PTS"] = games.groupby("GAME_ID")["PTS"].transform(
+    lambda x: x.iloc[::-1].values if len(x) == 2 else [None] * len(x)
 )
+
+games["POINT_DIFF"] = games["PTS"] - games["OPP_PTS"]
 
 games["AVG_POINTS_FOR"] = (
     games.groupby("TEAM_ABBREVIATION")["PTS"]

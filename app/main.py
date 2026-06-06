@@ -45,6 +45,14 @@ def calculate_expected_value(model_prob: float, american_odds: int) -> float:
 def root():
     return {"status": "running"}
 
+@app.get("/model-info")
+def model_info():
+    return {
+        "model_type": "LogisticRegression",
+        "accuracy": round(accuracy, 4),
+        "features": feature_cols,
+        "note": "Baseline model using recent form, home/away, scoring averages, and point differential.",
+    }
 
 @app.get("/teams")
 def get_teams():
@@ -55,6 +63,29 @@ def get_teams():
     )
     return {"teams": teams}
 
+@app.get("/team-stats/{team}")
+def get_team_stats(team: str):
+    team = team.upper()
+
+    row = team_latest_features[
+        team_latest_features["TEAM_ABBREVIATION"] == team
+    ]
+
+    if row.empty:
+        raise HTTPException(status_code=404, detail=f"Team '{team}' not found.")
+
+    row = row.iloc[0]
+
+    return {
+        "team": team,
+        "latest_game_date": str(row["GAME_DATE"]),
+        "is_home_last_game": int(row["IS_HOME"]),
+        "avg_points_for": round(float(row["AVG_POINTS_FOR"]), 2),
+        "win_rate": round(float(row["WIN_RATE"]), 4),
+        "last_10_win_rate": round(float(row["LAST_10_WIN_RATE"]), 4),
+        "last_10_avg_points": round(float(row["LAST_10_AVG_POINTS"]), 2),
+        "avg_point_diff": round(float(row["AVG_POINT_DIFF"]), 2),
+    }
 
 @app.get("/predict")
 def predict(home: str, away: str):
@@ -123,17 +154,36 @@ def bet_analysis(
     home_ev = calculate_expected_value(home_model_prob, home_odds)
     away_ev = calculate_expected_value(away_model_prob, away_odds)
 
-    best_bet = None
+    MIN_EDGE = 0.03
 
-    if home_ev > 0 and home_ev > away_ev:
+    best_bet = None
+    confidence = "No Bet"
+
+    if home_edge >= MIN_EDGE and home_ev > 0 and home_ev > away_ev:
         best_bet = home.upper()
-    elif away_ev > 0 and away_ev > home_ev:
+
+        if home_edge >= 0.08:
+            confidence = "High"
+        elif home_edge >= 0.05:
+            confidence = "Medium"
+        else:
+            confidence = "Low"
+
+    elif away_edge >= MIN_EDGE and away_ev > 0 and away_ev > home_ev:
         best_bet = away.upper()
+
+        if away_edge >= 0.08:
+            confidence = "High"
+        elif away_edge >= 0.05:
+            confidence = "Medium"
+        else:
+            confidence = "Low"
 
     return {
         "matchup": f"{away.upper()} @ {home.upper()}",
         "home_team": home.upper(),
         "away_team": away.upper(),
+        "minimum_edge_required": MIN_EDGE,
         "home": {
             "american_odds": home_odds,
             "model_probability": round(home_model_prob, 4),
@@ -149,5 +199,6 @@ def bet_analysis(
             "expected_value_per_1_dollar": round(away_ev, 4),
         },
         "best_bet": best_bet,
+        "confidence": confidence,
         "note": "Positive EV means the model probability is better than the sportsbook implied probability. This is not betting advice.",
     }
