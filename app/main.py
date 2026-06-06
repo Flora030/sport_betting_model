@@ -355,47 +355,78 @@ def live_bet_analysis():
         home_team_name = game.get("home_team")
         away_team_name = game.get("away_team")
 
-        bookmakers = game.get("bookmakers", [])
-        if not bookmakers:
-            continue
-
-        bookmaker = bookmakers[0]
-        markets = bookmaker.get("markets", [])
-        if not markets:
-            continue
-
-        outcomes = markets[0].get("outcomes", [])
-
-        home_odds = None
-        away_odds = None
-
-        for outcome in outcomes:
-            if outcome["name"] == home_team_name:
-                home_odds = outcome["price"]
-            elif outcome["name"] == away_team_name:
-                away_odds = outcome["price"]
-
-        if home_odds is None or away_odds is None:
-            continue
-
         home_abbr = name_to_abbr.get(home_team_name)
         away_abbr = name_to_abbr.get(away_team_name)
 
         if not home_abbr or not away_abbr:
             continue
 
+        best_home_odds = None
+        best_away_odds = None
+        best_home_bookmaker = None
+        best_away_bookmaker = None
+
+        all_bookmaker_odds = []
+
+        for bookmaker in game.get("bookmakers", []):
+            bookmaker_name = bookmaker.get("title")
+            markets = bookmaker.get("markets", [])
+
+            if not markets:
+                continue
+
+            outcomes = markets[0].get("outcomes", [])
+
+            current_home_odds = None
+            current_away_odds = None
+
+            for outcome in outcomes:
+                if outcome["name"] == home_team_name:
+                    current_home_odds = outcome["price"]
+                elif outcome["name"] == away_team_name:
+                    current_away_odds = outcome["price"]
+
+            if current_home_odds is None or current_away_odds is None:
+                continue
+
+            all_bookmaker_odds.append({
+                "bookmaker": bookmaker_name,
+                "home_odds": current_home_odds,
+                "away_odds": current_away_odds,
+            })
+
+            if best_home_odds is None or current_home_odds > best_home_odds:
+                best_home_odds = current_home_odds
+                best_home_bookmaker = bookmaker_name
+
+            if best_away_odds is None or current_away_odds > best_away_odds:
+                best_away_odds = current_away_odds
+                best_away_bookmaker = bookmaker_name
+
+        if best_home_odds is None or best_away_odds is None:
+            continue
+
         analysis = run_bet_analysis(
             home=home_abbr,
             away=away_abbr,
-            home_odds=home_odds,
-            away_odds=away_odds,
+            home_odds=best_home_odds,
+            away_odds=best_away_odds,
         )
 
-        analysis["bookmaker"] = bookmaker.get("title")
         analysis["commence_time"] = game.get("commence_time")
         analysis["home_team_full_name"] = home_team_name
         analysis["away_team_full_name"] = away_team_name
+        analysis["best_home_bookmaker"] = best_home_bookmaker
+        analysis["best_away_bookmaker"] = best_away_bookmaker
 
+        if analysis["best_bet"] == home_abbr:
+            analysis["recommended_bookmaker"] = best_home_bookmaker
+        elif analysis["best_bet"] == away_abbr:
+            analysis["recommended_bookmaker"] = best_away_bookmaker
+        else:
+            analysis["recommended_bookmaker"] = None
+
+        analysis["all_bookmaker_odds"] = all_bookmaker_odds
         results.append(analysis)
 
     return {
