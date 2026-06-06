@@ -2,6 +2,34 @@ import os
 import joblib
 import pandas as pd
 from fastapi import FastAPI, HTTPException
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+ODDS_API_KEY = os.getenv("ODDS_API_KEY")
+
+def fetch_nba_moneyline_odds():
+    if not ODDS_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing ODDS_API_KEY in .env")
+
+    url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
+
+    params = {
+        "apiKey": ODDS_API_KEY,
+        "regions": "us",
+        "markets": "h2h",
+        "oddsFormat": "american",
+    }
+
+    response = requests.get(url, params=params, timeout=10)
+
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=response.text
+        )
+
+    return response.json()
 
 app = FastAPI(
     title="NBA Prediction API",
@@ -139,13 +167,96 @@ def predict(home: str, away: str):
         "note": "Matchup-difference model with rest days and defensive features.",
     }
 
-@app.get("/bet-analysis")
-def bet_analysis(
-    home: str,
-    away: str,
-    home_odds: int,
-    away_odds: int
-):
+@app.get("/backtest")
+def backtest(min_edge: float = 0.03):
+    features_path = "data/processed/features.csv"
+
+    if not os.path.exists(features_path):
+        raise HTTPException(status_code=404, detail="features.csv not found. Run build_features.py first.")
+
+    data = pd.read_csv(features_path).dropna()
+
+    home_games = data[data["IS_HOME"] == 1].copy()
+    away_games = data[data["IS_HOME"] == 0].copy()
+
+    matchups = home_games.merge(
+        away_games,
+        on="GAME_ID",
+        suffixes=("_HOME", "_AWAY")
+    )
+
+    matchups["HOME_WIN"] = matchups["WIN_HOME"]
+
+    matchups["WIN_RATE_DIFF"] = matchups["WIN_RATE_HOME"] - matchups["WIN_RATE_AWAY"]
+    matchups["LAST_10_WIN_RATE_DIFF"] = matchups["LAST_10_WIN_RATE_HOME"] - matchups["LAST_10_WIN_RATE_AWAY"]
+    matchups["AVG_POINT_DIFF_DIFF"] = matchups["AVG_POINT_DIFF_HOME"] - matchups["AVG_POINT_DIFF_AWAY"]
+    matchups["AVG_POINTS_FOR_DIFF"] = matchups["AVG_POINTS_FOR_HOME"] - matchups["AVG_POINTS_FOR_AWAY"]
+    matchups["LAST_10_AVG_POINTS_DIFF"] = matchups["LAST_10_AVG_POINTS_HOME"] - matchups["LAST_10_AVG_POINTS_AWAY"]
+    matchups["AVG_POINTS_ALLOWED_DIFF"] = matchups["AVG_POINTS_ALLOWED_HOME"] - matchups["AVG_POINTS_ALLOWED_AWAY"]
+    matchups["LAST_10_POINTS_ALLOWED_DIFF"] = matchups["LAST_10_POINTS_ALLOWED_HOME"] - matchups["LAST_10_POINTS_ALLOWED_AWAY"]
+    matchups["REST_DAYS_DIFF"] = matchups["REST_DAYS_HOME"] - matchups["REST_DAYS_AWAY"]
+
+    matchups = matchups.dropna(subset=feature_cols + ["HOME_WIN"])
+
+    X = matchups[feature_cols]
+    matchups["HOME_WIN_PROB"] = model.predict_proba(X)[:, 1]
+
+    # temporary fake even odds
+    matchups["IMPLIED_PROB"] = 0.50
+    matchups["EDGE"] = matchups["HOME_WIN_PROB"] - matchups["IMPLIED_PROB"]
+
+    bets = matchups[matchups["EDGE"] >= min_edge].copy()
+    bets["BET_WON"] = bets["HOME_WIN"] == 1
+    bets["PROFIT"] = bets["BET_WON"].apply(lambda won: 1 if won else -1)
+
+    total_bets = len(bets)
+    wins = int(bets["BET_WON"].sum())
+    profit = float(bets["PROFIT"].sum())
+    roi = profit / total_bets if total_bets > 0 else 0
+
+    return {
+        "total_games": len(matchups),
+        "minimum_edge": min_edge,
+        "total_bets": total_bets,
+        "wins": wins,
+        "win_rate": round(wins / total_bets, 4) if total_bets else 0,
+        "profit_per_1_dollar_bet": round(profit, 2),
+        "roi_per_1_dollar_bet": round(roi, 4),
+        "note": "Backtest uses fake even odds for now. Real sportsbook odds will make this more realistic."
+    }
+
+@app.get("/live-odds")
+def live_odds():
+    odds_data = fetch_nba_moneyline_odds()
+
+    games = []
+
+    for game in odds_data:
+        bookmakers = game.get("bookmakers", [])
+
+        if not bookmakers:
+            continue
+
+        bookmaker = bookmakers[0]
+        markets = bookmaker.get("markets", [])
+
+        if not markets:
+            continue
+
+        outcomes = markets[0].get("outcomes", [])
+
+        games.append({
+            "id": game.get("id"),
+            "commence_time": game.get("commence_time"),
+            "home_team": game.get("home_team"),
+            "away_team": game.get("away_team"),
+            "bookmaker": bookmaker.get("title"),
+            "odds": outcomes,
+        })
+
+    return {"games": games}
+
+def run_bet_analysis(home: str, away: str, home_odds: int, away_odds: int):
     prediction = predict(home, away)
 
     home_model_prob = prediction["home_win_probability"]
@@ -161,29 +272,16 @@ def bet_analysis(
     away_ev = calculate_expected_value(away_model_prob, away_odds)
 
     MIN_EDGE = 0.03
-
     best_bet = None
     confidence = "No Bet"
 
     if home_edge >= MIN_EDGE and home_ev > 0 and home_ev > away_ev:
         best_bet = home.upper()
-
-        if home_edge >= 0.08:
-            confidence = "High"
-        elif home_edge >= 0.05:
-            confidence = "Medium"
-        else:
-            confidence = "Low"
+        confidence = "High" if home_edge >= 0.08 else "Medium" if home_edge >= 0.05 else "Low"
 
     elif away_edge >= MIN_EDGE and away_ev > 0 and away_ev > home_ev:
         best_bet = away.upper()
-
-        if away_edge >= 0.08:
-            confidence = "High"
-        elif away_edge >= 0.05:
-            confidence = "Medium"
-        else:
-            confidence = "Low"
+        confidence = "High" if away_edge >= 0.08 else "Medium" if away_edge >= 0.05 else "Low"
 
     return {
         "matchup": f"{away.upper()} @ {home.upper()}",
@@ -207,4 +305,100 @@ def bet_analysis(
         "best_bet": best_bet,
         "confidence": confidence,
         "note": "Positive EV means the model probability is better than the sportsbook implied probability. This is not betting advice.",
+    }
+
+@app.get("/bet-analysis")
+def bet_analysis(home: str, away: str, home_odds: int, away_odds: int):
+    return run_bet_analysis(home, away, home_odds, away_odds)
+
+@app.get("/live-bet-analysis")
+def live_bet_analysis():
+    odds_data = fetch_nba_moneyline_odds()
+
+    results = []
+
+    name_to_abbr = {
+        "Atlanta Hawks": "ATL",
+        "Boston Celtics": "BOS",
+        "Brooklyn Nets": "BKN",
+        "Charlotte Hornets": "CHA",
+        "Chicago Bulls": "CHI",
+        "Cleveland Cavaliers": "CLE",
+        "Dallas Mavericks": "DAL",
+        "Denver Nuggets": "DEN",
+        "Detroit Pistons": "DET",
+        "Golden State Warriors": "GSW",
+        "Houston Rockets": "HOU",
+        "Indiana Pacers": "IND",
+        "LA Clippers": "LAC",
+        "Los Angeles Clippers": "LAC",
+        "Los Angeles Lakers": "LAL",
+        "Memphis Grizzlies": "MEM",
+        "Miami Heat": "MIA",
+        "Milwaukee Bucks": "MIL",
+        "Minnesota Timberwolves": "MIN",
+        "New Orleans Pelicans": "NOP",
+        "New York Knicks": "NYK",
+        "Oklahoma City Thunder": "OKC",
+        "Orlando Magic": "ORL",
+        "Philadelphia 76ers": "PHI",
+        "Phoenix Suns": "PHX",
+        "Portland Trail Blazers": "POR",
+        "Sacramento Kings": "SAC",
+        "San Antonio Spurs": "SAS",
+        "Toronto Raptors": "TOR",
+        "Utah Jazz": "UTA",
+        "Washington Wizards": "WAS",
+    }
+
+    for game in odds_data:
+        home_team_name = game.get("home_team")
+        away_team_name = game.get("away_team")
+
+        bookmakers = game.get("bookmakers", [])
+        if not bookmakers:
+            continue
+
+        bookmaker = bookmakers[0]
+        markets = bookmaker.get("markets", [])
+        if not markets:
+            continue
+
+        outcomes = markets[0].get("outcomes", [])
+
+        home_odds = None
+        away_odds = None
+
+        for outcome in outcomes:
+            if outcome["name"] == home_team_name:
+                home_odds = outcome["price"]
+            elif outcome["name"] == away_team_name:
+                away_odds = outcome["price"]
+
+        if home_odds is None or away_odds is None:
+            continue
+
+        home_abbr = name_to_abbr.get(home_team_name)
+        away_abbr = name_to_abbr.get(away_team_name)
+
+        if not home_abbr or not away_abbr:
+            continue
+
+        analysis = run_bet_analysis(
+            home=home_abbr,
+            away=away_abbr,
+            home_odds=home_odds,
+            away_odds=away_odds,
+        )
+
+        analysis["bookmaker"] = bookmaker.get("title")
+        analysis["commence_time"] = game.get("commence_time")
+        analysis["home_team_full_name"] = home_team_name
+        analysis["away_team_full_name"] = away_team_name
+
+        results.append(analysis)
+
+    return {
+        "games_analyzed": len(results),
+        "games": results,
     }
