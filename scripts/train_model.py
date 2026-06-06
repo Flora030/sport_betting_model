@@ -6,46 +6,60 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 
-GAMES_PATH = "data/raw/games.csv"
+FEATURES_PATH = "data/processed/features.csv"
 MODEL_DIR = "models"
 MODEL_PATH = os.path.join(MODEL_DIR, "nba_win_model.joblib")
 
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-if not os.path.exists(GAMES_PATH):
-    raise FileNotFoundError("Run scripts/fetch_games.py first.")
+if not os.path.exists(FEATURES_PATH):
+    raise FileNotFoundError("Run scripts/build_features.py first.")
 
-games = pd.read_csv(GAMES_PATH)
-games = games.dropna(subset=["WL", "PTS"])
+data = pd.read_csv(FEATURES_PATH)
 
-games["WIN"] = games["WL"].map({"W": 1, "L": 0})
+data["WIN"] = data["WIN"].map({"W": 1, "L": 0}) if data["WIN"].dtype == "object" else data["WIN"]
 
-team_stats = (
-    games.groupby("TEAM_ABBREVIATION")
-    .agg(
-        avg_points=("PTS", "mean"),
-        win_rate=("WIN", "mean"),
-        games_played=("GAME_ID", "count"),
-    )
-    .reset_index()
-)
+feature_cols = [
+    "IS_HOME",
+    "AVG_POINTS_FOR",
+    "WIN_RATE",
+    "LAST_10_WIN_RATE",
+    "LAST_10_AVG_POINTS",
+    "AVG_POINT_DIFF",
+]
 
-training_data = games.merge(team_stats, on="TEAM_ABBREVIATION", how="left")
+data = data.dropna(subset=feature_cols + ["WIN"])
 
-X = training_data[["avg_points", "win_rate", "games_played"]]
-y = training_data["WIN"]
+X = data[feature_cols]
+y = data["WIN"].astype(int)
 
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, random_state=42
 )
 
-model = LogisticRegression()
+model = LogisticRegression(max_iter=1000)
 model.fit(X_train, y_train)
 
 predictions = model.predict(X_test)
 accuracy = accuracy_score(y_test, predictions)
 
-joblib.dump({"model": model, "team_stats": team_stats}, MODEL_PATH)
+team_latest_features = (
+    data.sort_values("GAME_DATE")
+    .groupby("TEAM_ABBREVIATION")
+    .tail(1)
+    .reset_index(drop=True)
+)
 
+joblib.dump(
+    {
+        "model": model,
+        "team_latest_features": team_latest_features,
+        "feature_cols": feature_cols,
+        "accuracy": accuracy,
+    },
+    MODEL_PATH,
+)
+
+print(f"Rows used for training: {len(data)}")
 print(f"Model saved to {MODEL_PATH}")
 print(f"Accuracy: {accuracy:.3f}")

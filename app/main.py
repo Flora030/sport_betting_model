@@ -20,7 +20,9 @@ def load_model_package():
 
 model_package = load_model_package()
 model = model_package["model"]
-team_stats = model_package["team_stats"]
+team_latest_features = model_package["team_latest_features"]
+feature_cols = model_package["feature_cols"]
+accuracy = model_package["accuracy"]
 
 
 @app.get("/")
@@ -30,7 +32,11 @@ def root():
 
 @app.get("/teams")
 def get_teams():
-    teams = team_stats["TEAM_ABBREVIATION"].sort_values().tolist()
+    teams = (
+        team_latest_features["TEAM_ABBREVIATION"]
+        .sort_values()
+        .tolist()
+    )
     return {"teams": teams}
 
 
@@ -39,8 +45,13 @@ def predict(home: str, away: str):
     home = home.upper()
     away = away.upper()
 
-    home_row = team_stats[team_stats["TEAM_ABBREVIATION"] == home]
-    away_row = team_stats[team_stats["TEAM_ABBREVIATION"] == away]
+    home_row = team_latest_features[
+        team_latest_features["TEAM_ABBREVIATION"] == home
+    ]
+
+    away_row = team_latest_features[
+        team_latest_features["TEAM_ABBREVIATION"] == away
+    ]
 
     if home_row.empty:
         raise HTTPException(status_code=404, detail=f"Home team '{home}' not found.")
@@ -48,39 +59,29 @@ def predict(home: str, away: str):
     if away_row.empty:
         raise HTTPException(status_code=404, detail=f"Away team '{away}' not found.")
 
-    home_features = pd.DataFrame(
-        [
-            {
-                "avg_points": home_row.iloc[0]["avg_points"],
-                "win_rate": home_row.iloc[0]["win_rate"],
-                "games_played": home_row.iloc[0]["games_played"],
-            }
-        ]
-    )
+    home_features = home_row.iloc[0][feature_cols].copy()
+    away_features = away_row.iloc[0][feature_cols].copy()
 
-    away_features = pd.DataFrame(
-        [
-            {
-                "avg_points": away_row.iloc[0]["avg_points"],
-                "win_rate": away_row.iloc[0]["win_rate"],
-                "games_played": away_row.iloc[0]["games_played"],
-            }
-        ]
-    )
+    home_features["IS_HOME"] = 1
+    away_features["IS_HOME"] = 0
 
-    home_win_probability = model.predict_proba(home_features)[0][1]
-    away_win_probability = model.predict_proba(away_features)[0][1]
+    home_df = pd.DataFrame([home_features])
+    away_df = pd.DataFrame([away_features])
 
-    total = home_win_probability + away_win_probability
+    home_score = model.predict_proba(home_df)[0][1]
+    away_score = model.predict_proba(away_df)[0][1]
 
-    normalized_home_probability = home_win_probability / total
-    normalized_away_probability = away_win_probability / total
+    total = home_score + away_score
+
+    home_prob = home_score / total
+    away_prob = away_score / total
 
     return {
         "home_team": home,
         "away_team": away,
-        "home_win_probability": round(normalized_home_probability, 4),
-        "away_win_probability": round(normalized_away_probability, 4),
-        "predicted_winner": home if normalized_home_probability > normalized_away_probability else away,
-        "note": "Baseline model only. This does not include injuries, odds, rest days, or matchup-specific features.",
+        "home_win_probability": round(home_prob, 4),
+        "away_win_probability": round(away_prob, 4),
+        "predicted_winner": home if home_prob > away_prob else away,
+        "model_accuracy": round(accuracy, 4),
+        "note": "Improved baseline with recent form, home/away, point differential, and team features.",
     }
