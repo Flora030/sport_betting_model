@@ -106,22 +106,21 @@ def predict(home: str, away: str):
     if away_row.empty:
         raise HTTPException(status_code=404, detail=f"Away team '{away}' not found.")
 
-    home_features = home_row.iloc[0][feature_cols].copy()
-    away_features = away_row.iloc[0][feature_cols].copy()
+    home_row = home_row.iloc[0]
+    away_row = away_row.iloc[0]
 
-    home_features["IS_HOME"] = 1
-    away_features["IS_HOME"] = 0
+    matchup_features = pd.DataFrame([
+        {
+            "WIN_RATE_DIFF": home_row["WIN_RATE"] - away_row["WIN_RATE"],
+            "LAST_10_WIN_RATE_DIFF": home_row["LAST_10_WIN_RATE"] - away_row["LAST_10_WIN_RATE"],
+            "AVG_POINT_DIFF_DIFF": home_row["AVG_POINT_DIFF"] - away_row["AVG_POINT_DIFF"],
+            "AVG_POINTS_FOR_DIFF": home_row["AVG_POINTS_FOR"] - away_row["AVG_POINTS_FOR"],
+            "LAST_10_AVG_POINTS_DIFF": home_row["LAST_10_AVG_POINTS"] - away_row["LAST_10_AVG_POINTS"],
+        }
+    ])
 
-    home_df = pd.DataFrame([home_features])
-    away_df = pd.DataFrame([away_features])
-
-    home_score = model.predict_proba(home_df)[0][1]
-    away_score = model.predict_proba(away_df)[0][1]
-
-    total = home_score + away_score
-
-    home_prob = home_score / total
-    away_prob = away_score / total
+    home_prob = model.predict_proba(matchup_features)[0][1]
+    away_prob = 1 - home_prob
 
     return {
         "home_team": home,
@@ -130,7 +129,7 @@ def predict(home: str, away: str):
         "away_win_probability": round(away_prob, 4),
         "predicted_winner": home if home_prob > away_prob else away,
         "model_accuracy": round(accuracy, 4),
-        "note": "Improved baseline with recent form, home/away, point differential, and team features.",
+        "note": "Matchup-difference model using home vs away team feature gaps.",
     }
 
 @app.get("/bet-analysis")

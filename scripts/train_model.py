@@ -12,26 +12,40 @@ MODEL_PATH = os.path.join(MODEL_DIR, "nba_win_model.joblib")
 
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-if not os.path.exists(FEATURES_PATH):
-    raise FileNotFoundError("Run scripts/build_features.py first.")
-
 data = pd.read_csv(FEATURES_PATH)
+data = data.dropna()
 
-data["WIN"] = data["WIN"].map({"W": 1, "L": 0}) if data["WIN"].dtype == "object" else data["WIN"]
+# Keep only rows where team is home
+home_games = data[data["IS_HOME"] == 1].copy()
+away_games = data[data["IS_HOME"] == 0].copy()
+
+# Merge home row with away row from same game
+matchups = home_games.merge(
+    away_games,
+    on="GAME_ID",
+    suffixes=("_HOME", "_AWAY")
+)
+
+matchups["WIN"] = matchups["WIN_HOME"]
+
+matchups["WIN_RATE_DIFF"] = matchups["WIN_RATE_HOME"] - matchups["WIN_RATE_AWAY"]
+matchups["LAST_10_WIN_RATE_DIFF"] = matchups["LAST_10_WIN_RATE_HOME"] - matchups["LAST_10_WIN_RATE_AWAY"]
+matchups["AVG_POINT_DIFF_DIFF"] = matchups["AVG_POINT_DIFF_HOME"] - matchups["AVG_POINT_DIFF_AWAY"]
+matchups["AVG_POINTS_FOR_DIFF"] = matchups["AVG_POINTS_FOR_HOME"] - matchups["AVG_POINTS_FOR_AWAY"]
+matchups["LAST_10_AVG_POINTS_DIFF"] = matchups["LAST_10_AVG_POINTS_HOME"] - matchups["LAST_10_AVG_POINTS_AWAY"]
 
 feature_cols = [
-    "IS_HOME",
-    "AVG_POINTS_FOR",
-    "WIN_RATE",
-    "LAST_10_WIN_RATE",
-    "LAST_10_AVG_POINTS",
-    "AVG_POINT_DIFF",
+    "WIN_RATE_DIFF",
+    "LAST_10_WIN_RATE_DIFF",
+    "AVG_POINT_DIFF_DIFF",
+    "AVG_POINTS_FOR_DIFF",
+    "LAST_10_AVG_POINTS_DIFF",
 ]
 
-data = data.dropna(subset=feature_cols + ["WIN"])
+matchups = matchups.dropna(subset=feature_cols + ["WIN"])
 
-X = data[feature_cols]
-y = data["WIN"].astype(int)
+X = matchups[feature_cols]
+y = matchups["WIN"].astype(int)
 
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, random_state=42
@@ -56,10 +70,11 @@ joblib.dump(
         "team_latest_features": team_latest_features,
         "feature_cols": feature_cols,
         "accuracy": accuracy,
+        "model_type": "matchup_difference",
     },
     MODEL_PATH,
 )
 
-print(f"Rows used for training: {len(data)}")
+print(f"Rows used for training: {len(matchups)}")
 print(f"Model saved to {MODEL_PATH}")
 print(f"Accuracy: {accuracy:.3f}")
