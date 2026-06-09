@@ -4,6 +4,8 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException
 import requests
 from dotenv import load_dotenv
+from nba_api.stats.endpoints import scoreboardv2
+from datetime import datetime, timezone
 
 FEATURES_PATH = "data/processed/features.csv"
 
@@ -71,6 +73,19 @@ def calculate_expected_value(model_prob: float, american_odds: int) -> float:
     ev = (model_prob * profit_if_win) - probability_losing
     return ev
 
+def calculate_profit_from_result(result: str, american_odds: int) -> float:
+    result = str(result).upper().strip()
+
+    if result == "LOSS":
+        return -1.0
+
+    if result == "WIN":
+        if american_odds > 0:
+            return american_odds / 100
+        return 100 / abs(american_odds)
+
+    return 0.0
+
 def build_matchup_dataset():
     features_path = "data/processed/features.csv"
 
@@ -100,7 +115,6 @@ def build_matchup_dataset():
     matchups["LAST_10_AVG_POINTS_DIFF"] = matchups["LAST_10_AVG_POINTS_HOME"] - matchups["LAST_10_AVG_POINTS_AWAY"]
     matchups["AVG_POINTS_ALLOWED_DIFF"] = matchups["AVG_POINTS_ALLOWED_HOME"] - matchups["AVG_POINTS_ALLOWED_AWAY"]
     matchups["LAST_10_POINTS_ALLOWED_DIFF"] = matchups["LAST_10_POINTS_ALLOWED_HOME"] - matchups["LAST_10_POINTS_ALLOWED_AWAY"]
-    matchups["REST_DAYS_DIFF"] = matchups["REST_DAYS_HOME"] - matchups["REST_DAYS_AWAY"]
     matchups["REST_DAYS_DIFF"] = matchups["REST_DAYS_HOME"] - matchups["REST_DAYS_AWAY"]
     matchups["LAST_5_WIN_RATE_DIFF"] = (
         matchups["LAST_5_WIN_RATE_HOME"] - matchups["LAST_5_WIN_RATE_AWAY"])
@@ -191,8 +205,9 @@ def predict(home: str, away: str):
             "LAST_10_AVG_POINTS_DIFF": home_row["LAST_10_AVG_POINTS"] - away_row["LAST_10_AVG_POINTS"],
             "AVG_POINTS_ALLOWED_DIFF": home_row["AVG_POINTS_ALLOWED"] - away_row["AVG_POINTS_ALLOWED"],
             "LAST_10_POINTS_ALLOWED_DIFF": home_row["LAST_10_POINTS_ALLOWED"] - away_row["LAST_10_POINTS_ALLOWED"],
-            "REST_DAYS_DIFF": home_row["REST_DAYS"] - away_row["REST_DAYS"], "LAST_5_WIN_RATE_DIFF": home_row["LAST_5_WIN_RATE"] - away_row["LAST_5_WIN_RATE"],
+            "REST_DAYS_DIFF": home_row["REST_DAYS"] - away_row["REST_DAYS"],
             "LAST_5_AVG_POINTS_DIFF": home_row["LAST_5_AVG_POINTS"] - away_row["LAST_5_AVG_POINTS"],
+            "LAST_5_WIN_RATE_DIFF": home_row["LAST_5_WIN_RATE"] - away_row["LAST_5_WIN_RATE"],
             "LAST_5_POINTS_ALLOWED_DIFF": home_row["LAST_5_POINTS_ALLOWED"] - away_row["LAST_5_POINTS_ALLOWED"],
             "HOME_ADVANTAGE_DIFF": home_row["HOME_WIN_RATE"] - away_row["AWAY_WIN_RATE"],
         }
@@ -552,6 +567,48 @@ def calibration():
         "note": "If predicted probability is well-calibrated, avg_predicted_probability should be close to actual_win_rate in each bucket.",
     }
 
+@app.get("/paper-bet-results")
+def paper_bet_results():
+    path = "data/paper_bets.csv"
+
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="No paper bets file found.")
+
+    df = pd.read_csv(path)
+
+    df["result"] = df["result"].astype(str).str.upper().str.strip()
+    completed = df[df["result"].isin(["WIN", "LOSS"])].copy()
+
+    if completed.empty:
+        return {
+            "completed_bets": 0,
+            "message": "No completed bets yet. Update result as WIN or LOSS."
+        }
+
+    completed["auto_profit"] = completed.apply(
+        lambda row: calculate_profit_from_result(
+            row["result"],
+            int(row["odds"])
+        ),
+        axis=1
+    )
+
+    total_bets = len(completed)
+    wins = len(completed[completed["result"] == "WIN"])
+    losses = len(completed[completed["result"] == "LOSS"])
+    profit = completed["auto_profit"].sum()
+    roi = profit / total_bets
+
+    return {
+        "completed_bets": total_bets,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": round(wins / total_bets, 4),
+        "total_profit_per_1_dollar_bet": round(profit, 2),
+        "roi_per_1_dollar_bet": round(roi, 4),
+        "note": "Profit is auto-calculated from American odds assuming $1 per paper bet.",
+    }
+
 @app.get("/save-paper-bets")
 def save_paper_bets():
     analysis = live_bet_analysis()
@@ -559,6 +616,9 @@ def save_paper_bets():
 
     for game in analysis["games"]:
         if game["best_bet"] is None:
+            continue
+
+        if game["confidence"] == "Low":
             continue
 
         best_bet = game["best_bet"]
@@ -569,6 +629,7 @@ def save_paper_bets():
             side = game["away"]
 
         rows.append({
+            "saved_at": datetime.now(timezone.utc).isoformat(),
             "date": game["commence_time"],
             "matchup": game["matchup"],
             "best_bet": best_bet,
@@ -578,7 +639,7 @@ def save_paper_bets():
             "edge": side["edge"],
             "confidence": game["confidence"],
             "result": "",
-            "profit": "",
+            "profit": 0,
         })
 
     path = "data/paper_bets.csv"
@@ -600,5 +661,91 @@ def save_paper_bets():
     return {
         "saved_bets": len(rows),
         "file": path,
-        "note": "After games finish, manually update result as WIN or LOSS and profit."
+        "workflow": [
+            "/save-paper-bets",
+            "/update-paper-bets",
+            "/paper-bet-results"
+        ]
+    }
+
+@app.get("/update-paper-bets")
+def update_paper_bets():
+    path = "data/paper_bets.csv"
+
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="No paper bets file found.")
+
+    df = pd.read_csv(path)
+
+    if df.empty:
+        return {"updated": 0, "message": "No paper bets to update."}
+
+    updated_count = 0
+    skipped_count = 0
+
+    for index, row in df.iterrows():
+        if str(row["result"]).upper().strip() in ["WIN", "LOSS"]:
+            continue
+
+        game_date = pd.to_datetime(row["date"]).date()
+        date_str = game_date.strftime("%m/%d/%Y")
+
+        matchup = row["matchup"]
+        best_bet = row["best_bet"]
+
+        away_team, home_team = matchup.split(" @ ")
+
+        try:
+            scoreboard = scoreboardv2.ScoreboardV2(game_date=date_str)
+            dataframes = scoreboard.get_data_frames()
+
+            line_score = None
+
+            for frame in dataframes:
+                if "TEAM_ABBREVIATION" in frame.columns and "PTS" in frame.columns:
+                    line_score = frame
+                    break
+
+            if line_score is None:
+                skipped_count += 1
+                continue
+
+        except Exception:
+            skipped_count += 1
+            continue
+
+        matching_rows = line_score[
+            line_score["TEAM_ABBREVIATION"].isin([away_team, home_team])
+        ]
+
+        if len(matching_rows) < 2:
+            skipped_count += 1
+            continue
+
+        team_scores = dict(
+            zip(
+                matching_rows["TEAM_ABBREVIATION"],
+                matching_rows["PTS"]
+            )
+        )
+
+        away_score = team_scores.get(away_team)
+        home_score = team_scores.get(home_team)
+
+        if pd.isna(away_score) or pd.isna(home_score):
+            skipped_count += 1
+            continue
+
+        winner = home_team if home_score > away_score else away_team
+
+        df.at[index, "result"] = "WIN" if best_bet == winner else "LOSS"
+        updated_count += 1
+
+    df.to_csv(path, index=False)
+
+    return {
+        "updated": updated_count,
+        "skipped": skipped_count,
+        "file": path,
+        "note": "Updated completed paper bets using NBA final scores."
     }
