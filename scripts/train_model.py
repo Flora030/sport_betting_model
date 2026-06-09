@@ -12,7 +12,7 @@ MODEL_PATH = os.path.join(MODEL_DIR, "nba_win_model.joblib")
 
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-data = pd.read_csv(FEATURES_PATH).dropna()
+data = pd.read_csv(FEATURES_PATH)
 
 home_games = data[data["IS_HOME"] == 1].copy()
 away_games = data[data["IS_HOME"] == 0].copy()
@@ -33,6 +33,22 @@ matchups["LAST_10_AVG_POINTS_DIFF"] = matchups["LAST_10_AVG_POINTS_HOME"] - matc
 matchups["AVG_POINTS_ALLOWED_DIFF"] = matchups["AVG_POINTS_ALLOWED_HOME"] - matchups["AVG_POINTS_ALLOWED_AWAY"]
 matchups["LAST_10_POINTS_ALLOWED_DIFF"] = matchups["LAST_10_POINTS_ALLOWED_HOME"] - matchups["LAST_10_POINTS_ALLOWED_AWAY"]
 matchups["REST_DAYS_DIFF"] = matchups["REST_DAYS_HOME"] - matchups["REST_DAYS_AWAY"]
+matchups["LAST_5_WIN_RATE_DIFF"] = (
+    matchups["LAST_5_WIN_RATE_HOME"]
+    - matchups["LAST_5_WIN_RATE_AWAY"]
+)
+matchups["LAST_5_AVG_POINTS_DIFF"] = (
+    matchups["LAST_5_AVG_POINTS_HOME"]
+    - matchups["LAST_5_AVG_POINTS_AWAY"]
+)
+matchups["LAST_5_POINTS_ALLOWED_DIFF"] = (
+    matchups["LAST_5_POINTS_ALLOWED_HOME"]
+    - matchups["LAST_5_POINTS_ALLOWED_AWAY"]
+)
+matchups["HOME_ADVANTAGE_DIFF"] = (
+    matchups["HOME_WIN_RATE_HOME"]
+    - matchups["AWAY_WIN_RATE_AWAY"]
+)
 
 feature_cols = [
     "WIN_RATE_DIFF",
@@ -43,6 +59,10 @@ feature_cols = [
     "AVG_POINTS_ALLOWED_DIFF",
     "LAST_10_POINTS_ALLOWED_DIFF",
     "REST_DAYS_DIFF",
+    "LAST_5_WIN_RATE_DIFF",
+    "LAST_5_AVG_POINTS_DIFF",
+    "LAST_5_POINTS_ALLOWED_DIFF",
+    "HOME_ADVANTAGE_DIFF"
 ]
 
 matchups = matchups.dropna(subset=feature_cols + ["WIN"])
@@ -50,12 +70,31 @@ matchups = matchups.dropna(subset=feature_cols + ["WIN"])
 X = matchups[feature_cols]
 y = matchups["WIN"].astype(int)
 
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
+matchups["SEASON_YEAR"] = (
+    matchups["SEASON_ID_HOME"]
+    .astype(str)
+    .str[-4:]
+    .astype(int)
+)
+
+sample_weights = matchups["SEASON_YEAR"].map({
+    2021: 0.6,
+    2022: 0.7,
+    2023: 0.85,
+    2024: 1.0,
+    2025: 1.15,
+}).fillna(1.0)
+
+X_train, X_test, y_train, y_test, weights_train, weights_test = train_test_split(
+    X,
+    y,
+    sample_weights,
+    test_size=0.2,
+    random_state=42
 )
 
 model = LogisticRegression(max_iter=1000)
-model.fit(X_train, y_train)
+model.fit(X_train, y_train, sample_weight=weights_train)
 
 predictions = model.predict(X_test)
 probabilities = model.predict_proba(X_test)[:, 1]
@@ -79,7 +118,14 @@ joblib.dump(
         "accuracy": accuracy,
         "precision": precision,
         "log_loss": loss,
-        "model_type": "matchup_difference_with_rest_and_defense",
+        "model_type": "matchup_difference_with_rest_defense_last5_homeaway_weighted",
+        "season_weighting": {
+            2021: 0.6,
+            2022: 0.7,
+            2023: 0.85,
+            2024: 1.0,
+            2025: 1.15,
+        },
     },
     MODEL_PATH,
 )

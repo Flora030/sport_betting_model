@@ -5,6 +5,8 @@ from fastapi import FastAPI, HTTPException
 import requests
 from dotenv import load_dotenv
 
+FEATURES_PATH = "data/processed/features.csv"
+
 load_dotenv()
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
@@ -78,7 +80,7 @@ def build_matchup_dataset():
             detail="features.csv not found. Run build_features.py first."
         )
 
-    data = pd.read_csv(features_path).dropna()
+    data = pd.read_csv(FEATURES_PATH)
 
     home_games = data[data["IS_HOME"] == 1].copy()
     away_games = data[data["IS_HOME"] == 0].copy()
@@ -99,6 +101,15 @@ def build_matchup_dataset():
     matchups["AVG_POINTS_ALLOWED_DIFF"] = matchups["AVG_POINTS_ALLOWED_HOME"] - matchups["AVG_POINTS_ALLOWED_AWAY"]
     matchups["LAST_10_POINTS_ALLOWED_DIFF"] = matchups["LAST_10_POINTS_ALLOWED_HOME"] - matchups["LAST_10_POINTS_ALLOWED_AWAY"]
     matchups["REST_DAYS_DIFF"] = matchups["REST_DAYS_HOME"] - matchups["REST_DAYS_AWAY"]
+    matchups["REST_DAYS_DIFF"] = matchups["REST_DAYS_HOME"] - matchups["REST_DAYS_AWAY"]
+    matchups["LAST_5_WIN_RATE_DIFF"] = (
+        matchups["LAST_5_WIN_RATE_HOME"] - matchups["LAST_5_WIN_RATE_AWAY"])
+    matchups["LAST_5_AVG_POINTS_DIFF"] = (
+        matchups["LAST_5_AVG_POINTS_HOME"] - matchups["LAST_5_AVG_POINTS_AWAY"])
+    matchups["LAST_5_POINTS_ALLOWED_DIFF"] = (
+        matchups["LAST_5_POINTS_ALLOWED_HOME"] - matchups["LAST_5_POINTS_ALLOWED_AWAY"])
+    matchups["HOME_ADVANTAGE_DIFF"] = (
+        matchups["HOME_WIN_RATE_HOME"] - matchups["AWAY_WIN_RATE_AWAY"])
 
     return matchups.dropna(subset=feature_cols + ["HOME_WIN"])
 
@@ -180,7 +191,10 @@ def predict(home: str, away: str):
             "LAST_10_AVG_POINTS_DIFF": home_row["LAST_10_AVG_POINTS"] - away_row["LAST_10_AVG_POINTS"],
             "AVG_POINTS_ALLOWED_DIFF": home_row["AVG_POINTS_ALLOWED"] - away_row["AVG_POINTS_ALLOWED"],
             "LAST_10_POINTS_ALLOWED_DIFF": home_row["LAST_10_POINTS_ALLOWED"] - away_row["LAST_10_POINTS_ALLOWED"],
-            "REST_DAYS_DIFF": home_row["REST_DAYS"] - away_row["REST_DAYS"],
+            "REST_DAYS_DIFF": home_row["REST_DAYS"] - away_row["REST_DAYS"], "LAST_5_WIN_RATE_DIFF": home_row["LAST_5_WIN_RATE"] - away_row["LAST_5_WIN_RATE"],
+            "LAST_5_AVG_POINTS_DIFF": home_row["LAST_5_AVG_POINTS"] - away_row["LAST_5_AVG_POINTS"],
+            "LAST_5_POINTS_ALLOWED_DIFF": home_row["LAST_5_POINTS_ALLOWED"] - away_row["LAST_5_POINTS_ALLOWED"],
+            "HOME_ADVANTAGE_DIFF": home_row["HOME_WIN_RATE"] - away_row["AWAY_WIN_RATE"],
         }
     ])
 
@@ -207,7 +221,7 @@ def backtest(min_edge: float = 0.03):
     if not os.path.exists(features_path):
         raise HTTPException(status_code=404, detail="features.csv not found. Run build_features.py first.")
 
-    data = pd.read_csv(features_path).dropna()
+    data = pd.read_csv(FEATURES_PATH)
 
     home_games = data[data["IS_HOME"] == 1].copy()
     away_games = data[data["IS_HOME"] == 0].copy()
@@ -228,7 +242,14 @@ def backtest(min_edge: float = 0.03):
     matchups["AVG_POINTS_ALLOWED_DIFF"] = matchups["AVG_POINTS_ALLOWED_HOME"] - matchups["AVG_POINTS_ALLOWED_AWAY"]
     matchups["LAST_10_POINTS_ALLOWED_DIFF"] = matchups["LAST_10_POINTS_ALLOWED_HOME"] - matchups["LAST_10_POINTS_ALLOWED_AWAY"]
     matchups["REST_DAYS_DIFF"] = matchups["REST_DAYS_HOME"] - matchups["REST_DAYS_AWAY"]
-
+    matchups["LAST_5_WIN_RATE_DIFF"] = (
+    matchups["LAST_5_WIN_RATE_HOME"] - matchups["LAST_5_WIN_RATE_AWAY"])
+    matchups["LAST_5_AVG_POINTS_DIFF"] = (
+        matchups["LAST_5_AVG_POINTS_HOME"] - matchups["LAST_5_AVG_POINTS_AWAY"])
+    matchups["LAST_5_POINTS_ALLOWED_DIFF"] = (
+        matchups["LAST_5_POINTS_ALLOWED_HOME"] - matchups["LAST_5_POINTS_ALLOWED_AWAY"])
+    matchups["HOME_ADVANTAGE_DIFF"] = (
+        matchups["HOME_WIN_RATE_HOME"] - matchups["AWAY_WIN_RATE_AWAY"])
     matchups = matchups.dropna(subset=feature_cols + ["HOME_WIN"])
 
     X = matchups[feature_cols]
@@ -529,4 +550,55 @@ def calibration():
         "average_calibration_error": round(float(avg_error), 4),
         "buckets": rows,
         "note": "If predicted probability is well-calibrated, avg_predicted_probability should be close to actual_win_rate in each bucket.",
+    }
+
+@app.get("/save-paper-bets")
+def save_paper_bets():
+    analysis = live_bet_analysis()
+    rows = []
+
+    for game in analysis["games"]:
+        if game["best_bet"] is None:
+            continue
+
+        best_bet = game["best_bet"]
+
+        if best_bet == game["home_team"]:
+            side = game["home"]
+        else:
+            side = game["away"]
+
+        rows.append({
+            "date": game["commence_time"],
+            "matchup": game["matchup"],
+            "best_bet": best_bet,
+            "bookmaker": game["recommended_bookmaker"],
+            "odds": side["american_odds"],
+            "model_probability": side["model_probability"],
+            "edge": side["edge"],
+            "confidence": game["confidence"],
+            "result": "",
+            "profit": "",
+        })
+
+    path = "data/paper_bets.csv"
+
+    new_df = pd.DataFrame(rows)
+
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        old_df = pd.read_csv(path)
+        final_df = pd.concat([old_df, new_df], ignore_index=True)
+        final_df = final_df.drop_duplicates(
+            subset=["date", "matchup", "best_bet"],
+            keep="last"
+        )
+    else:
+        final_df = new_df
+
+    final_df.to_csv(path, index=False)
+
+    return {
+        "saved_bets": len(rows),
+        "file": path,
+        "note": "After games finish, manually update result as WIN or LOSS and profit."
     }

@@ -10,7 +10,7 @@ model_package = joblib.load(MODEL_PATH)
 model = model_package["model"]
 feature_cols = model_package["feature_cols"]
 
-data = pd.read_csv(FEATURES_PATH).dropna()
+data = pd.read_csv(FEATURES_PATH)
 
 home_games = data[data["IS_HOME"] == 1].copy()
 away_games = data[data["IS_HOME"] == 0].copy()
@@ -31,6 +31,14 @@ matchups["LAST_10_AVG_POINTS_DIFF"] = matchups["LAST_10_AVG_POINTS_HOME"] - matc
 matchups["AVG_POINTS_ALLOWED_DIFF"] = matchups["AVG_POINTS_ALLOWED_HOME"] - matchups["AVG_POINTS_ALLOWED_AWAY"]
 matchups["LAST_10_POINTS_ALLOWED_DIFF"] = matchups["LAST_10_POINTS_ALLOWED_HOME"] - matchups["LAST_10_POINTS_ALLOWED_AWAY"]
 matchups["REST_DAYS_DIFF"] = matchups["REST_DAYS_HOME"] - matchups["REST_DAYS_AWAY"]
+matchups["LAST_5_WIN_RATE_DIFF"] = (
+    matchups["LAST_5_WIN_RATE_HOME"] - matchups["LAST_5_WIN_RATE_AWAY"])
+matchups["LAST_5_AVG_POINTS_DIFF"] = (
+    matchups["LAST_5_AVG_POINTS_HOME"] - matchups["LAST_5_AVG_POINTS_AWAY"])
+matchups["LAST_5_POINTS_ALLOWED_DIFF"] = (
+    matchups["LAST_5_POINTS_ALLOWED_HOME"] - matchups["LAST_5_POINTS_ALLOWED_AWAY"])
+matchups["HOME_ADVANTAGE_DIFF"] = (
+    matchups["HOME_WIN_RATE_HOME"] - matchups["AWAY_WIN_RATE_AWAY"])
 
 matchups = matchups.dropna(subset=feature_cols + ["HOME_WIN"])
 

@@ -9,6 +9,10 @@ os.makedirs(PROCESSED_DIR, exist_ok=True)
 
 games = pd.read_csv(RAW_GAMES_PATH)
 
+games = games[
+    games["SEASON_ID"].astype(str).str[-4:].astype(int) >= 2021
+]
+
 games["GAME_DATE"] = pd.to_datetime(games["GAME_DATE"])
 games["WIN"] = games["WL"].map({"W": 1, "L": 0})
 games["IS_HOME"] = games["MATCHUP"].apply(lambda x: 1 if "vs." in x else 0)
@@ -66,6 +70,35 @@ games["AVG_POINT_DIFF"] = (
     .transform(lambda x: x.shift().expanding().mean())
 )
 
+games["LAST_5_WIN_RATE"] = (
+    games.groupby("TEAM_ABBREVIATION")["WIN"]
+    .transform(lambda x: x.shift().rolling(5, min_periods=3).mean())
+)
+
+games["LAST_5_AVG_POINTS"] = (
+    games.groupby("TEAM_ABBREVIATION")["PTS"]
+    .transform(lambda x: x.shift().rolling(5, min_periods=3).mean())
+)
+
+games["LAST_5_POINTS_ALLOWED"] = (
+    games.groupby("TEAM_ABBREVIATION")["OPP_PTS"]
+    .transform(lambda x: x.shift().rolling(5, min_periods=3).mean())
+)
+
+games["HOME_GAME_WIN"] = games["WIN"].where(games["IS_HOME"] == 1)
+
+games["AWAY_GAME_WIN"] = games["WIN"].where(games["IS_HOME"] == 0)
+
+games["HOME_WIN_RATE"] = (
+    games.groupby("TEAM_ABBREVIATION")["HOME_GAME_WIN"]
+    .transform(lambda x: x.shift().expanding().mean())
+)
+
+games["AWAY_WIN_RATE"] = (
+    games.groupby("TEAM_ABBREVIATION")["AWAY_GAME_WIN"]
+    .transform(lambda x: x.shift().expanding().mean())
+)
+
 features = games.dropna(
     subset=[
         "AVG_POINTS_FOR",
@@ -76,6 +109,11 @@ features = games.dropna(
         "LAST_10_POINTS_ALLOWED",
         "AVG_POINT_DIFF",
         "REST_DAYS",
+        "LAST_5_WIN_RATE",
+        "LAST_5_AVG_POINTS",
+        "LAST_5_POINTS_ALLOWED",
+        "HOME_WIN_RATE",
+        "AWAY_WIN_RATE",
     ]
 )
 
